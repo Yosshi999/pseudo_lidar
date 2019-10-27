@@ -6,6 +6,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import math
 from submodule import *
+from V2_util import *
 
 class PSMNet(nn.Module):
     def __init__(self, maxdisp):
@@ -57,22 +58,26 @@ class PSMNet(nn.Module):
                 m.bias.data.zero_()
 
 
-    def forward(self, left, right):
+    def forward(self, left, right, calib):
 
         refimg_fea     = self.feature_extraction(left)
         targetimg_fea  = self.feature_extraction(right)
  
         #matching
-        cost = Variable(torch.FloatTensor(refimg_fea.size()[0], refimg_fea.size()[1]*2, self.maxdisp/4,  refimg_fea.size()[2],  refimg_fea.size()[3]).zero_(), volatile= not self.training).cuda()
-
+        _cost = torch.FloatTensor(refimg_fea.size()[0], refimg_fea.size()[1]*2, self.maxdisp/4,  refimg_fea.size()[2],  refimg_fea.size()[3]).zero_()
         for i in range(self.maxdisp/4):
             if i > 0 :
-             cost[:, :refimg_fea.size()[1], i, :,i:]   = refimg_fea[:,:,:,i:]
-             cost[:, refimg_fea.size()[1]:, i, :,i:] = targetimg_fea[:,:,:,:-i]
+             _cost[:, :refimg_fea.size()[1], i, :,i:]   = refimg_fea[:,:,:,i:]
+             _cost[:, refimg_fea.size()[1]:, i, :,i:] = targetimg_fea[:,:,:,:-i]
             else:
-             cost[:, :refimg_fea.size()[1], i, :,:]   = refimg_fea
-             cost[:, refimg_fea.size()[1]:, i, :,:]   = targetimg_fea
-        cost = cost.contiguous()
+             _cost[:, :refimg_fea.size()[1], i, :,:]   = refimg_fea
+             _cost[:, refimg_fea.size()[1]:, i, :,:]   = targetimg_fea
+
+        depths = np.linspace(disp2depth(calib, 1),
+                             disp2depth(calib, maxdisp/4),
+                             maxdisp/4, endpoint=False)
+        _costD = convert_cost_volume(_cost, calib, self.depths)
+        cost = Variable(_costD, volatile=not self.training).cuda().contiguous()
 
         cost0 = self.dres0(cost)
         cost0 = self.dres1(cost0) + cost0
@@ -84,6 +89,6 @@ class PSMNet(nn.Module):
         cost = F.upsample(cost, [self.maxdisp,left.size()[2],left.size()[3]], mode='trilinear')
         cost = torch.squeeze(cost,1)
         pred = F.softmax(cost)
-        pred = disparityregression(self.maxdisp)(pred)
+        pred = depthregression(self.depths)(calib, pred)
 
         return pred

@@ -52,7 +52,7 @@ else:
    from dataloader import KITTI_submission_loader2012 as DA  
 
 
-test_left_img, test_right_img = DA.dataloader(args.datapath)
+test_left_img, test_right_img, test_calib = DA.dataloader(args.datapath)
 
 if args.model == 'stackhourglass':
     model = stackhourglass(args.maxdisp)
@@ -70,17 +70,19 @@ if args.loadmodel is not None:
 
 print('Number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
 
-def test(imgL,imgR):
+def test(imgL,imgR,calib):
         model.eval()
 
         if args.cuda:
            imgL = torch.FloatTensor(imgL).cuda()
            imgR = torch.FloatTensor(imgR).cuda()     
+           calib = torch.FloatTensor(calib).cuda()
 
         imgL, imgR= Variable(imgL), Variable(imgR)
+        calib = Variable(calib)
 
         with torch.no_grad():
-            output = model(imgL,imgR)
+            output = model(imgL,imgR,calib)
         output = torch.squeeze(output)
         pred_disp = output.data.cpu().numpy()
 
@@ -101,6 +103,7 @@ def main():
        imgR = processed(imgR_o).numpy()
        imgL = np.reshape(imgL,[1,3,imgL.shape[1],imgL.shape[2]])
        imgR = np.reshape(imgR,[1,3,imgR.shape[1],imgR.shape[2]])
+       calib = test_calib[inx]
 
        # pad to (384, 1248)
        top_pad = 384-imgL.shape[2]
@@ -109,7 +112,7 @@ def main():
        imgR = np.lib.pad(imgR,((0,0),(0,0),(top_pad,0),(0,left_pad)),mode='constant',constant_values=0)
 
        start_time = time.time()
-       pred_disp = test(imgL,imgR)
+       pred_disp = test(imgL,imgR,calib)
        print('time = %.2f' %(time.time() - start_time))
 
        top_pad   = 384-imgL_o.shape[0]

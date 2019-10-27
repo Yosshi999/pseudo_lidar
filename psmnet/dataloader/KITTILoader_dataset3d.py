@@ -5,6 +5,7 @@ import preprocess
 import torch
 import torch.utils.data as data
 from PIL import Image
+import kitti_util
 
 IMG_EXTENSIONS = [
     '.jpg', '.JPG', '.jpeg', '.JPEG',
@@ -23,13 +24,17 @@ def default_loader(path):
 def disparity_loader(path):
     return np.load(path).astype(np.float32)
 
+def calib_loader(path):
+    fu = kitti_util.Calibration(path).f_u
+    return fu
 
 class myImageFloder(data.Dataset):
-    def __init__(self, left, right, left_disparity, training, loader=default_loader, dploader=disparity_loader):
+    def __init__(self, left, right, left_disparity, calib, training, loader=default_loader, dploader=disparity_loader):
 
         self.left = left
         self.right = right
         self.disp_L = left_disparity
+        self.calib = calib
         self.loader = loader
         self.dploader = dploader
         self.training = training
@@ -41,6 +46,7 @@ class myImageFloder(data.Dataset):
 
         left_img = self.loader(left)
         right_img = self.loader(right)
+        calib = calib_loader(self.calib)
         dataL = self.dploader(disp_L)
 
         if self.training:
@@ -76,6 +82,7 @@ class myImageFloder(data.Dataset):
             right_img = processed(right_img)
 
         dataL = torch.from_numpy(dataL).float()
+        calib = torch.tensor(calib).float()
         return left_img, right_img, dataL
 
     def __len__(self):
