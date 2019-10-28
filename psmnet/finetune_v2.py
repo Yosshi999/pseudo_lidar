@@ -133,18 +133,19 @@ def test(imgL, imgR, disp_true, calib):
     model.eval()
     imgL = Variable(torch.FloatTensor(imgL))
     imgR = Variable(torch.FloatTensor(imgR))
+    disp_true = Variable(torch.FloatTensor(disp_true))
     calib = Variable(torch.FloatTensor(calib))
     if args.cuda:
-        imgL, imgR = imgL.cuda(), imgR.cuda()
+        imgL, imgR, disp_true = imgL.cuda(), imgR.cuda(), disp_true.cuda()
         calib = calib.cuda()
 
     with torch.no_grad():
         output3 = model(imgL, imgR, calib)
 
-    pred_disp = output3.data.cpu()
+    pred_depth = output3.data.cpu()
 
     # computing 3-px error#
-    depth_true = disp2depth_torch(calib, disp_true)
+    depth_true = disp2depth_torch(calib.view(-1, 1, 1), disp_true).cpu()
     true_depth = depth_true
     index = np.argwhere(true_depth > 0)
     depth_true[index[0][:], index[1][:], index[2][:]] = np.abs(
