@@ -7,6 +7,7 @@ import torch.utils.data
 from torch.autograd import Variable
 import torch.nn.functional as F
 import math
+from V2_util import *
 
 
 class hourglass(nn.Module):
@@ -106,24 +107,36 @@ class PSMNet(nn.Module):
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
 
-    def forward(self, left, right):
+    def forward(self, left, right, calib):
 
         refimg_fea = self.feature_extraction(left)
         targetimg_fea = self.feature_extraction(right)
 
         # matching
-        cost = Variable(
+        _cost = Variable(
             torch.FloatTensor(refimg_fea.size()[0], refimg_fea.size()[1] * 2, self.maxdisp / 4, refimg_fea.size()[2],
                               refimg_fea.size()[3]).zero_()).cuda()
 
         for i in range(self.maxdisp / 4):
             if i > 0:
-                cost[:, :refimg_fea.size()[1], i, :, i:] = refimg_fea[:, :, :, i:]
-                cost[:, refimg_fea.size()[1]:, i, :, i:] = targetimg_fea[:, :, :, :-i]
+                _cost[:, :refimg_fea.size()[1], i, :, i:] = refimg_fea[:, :, :, i:]
+                _cost[:, refimg_fea.size()[1]:, i, :, i:] = targetimg_fea[:, :, :, :-i]
             else:
-                cost[:, :refimg_fea.size()[1], i, :, :] = refimg_fea
-                cost[:, refimg_fea.size()[1]:, i, :, :] = targetimg_fea
-        cost = cost.contiguous()
+                _cost[:, :refimg_fea.size()[1], i, :, :] = refimg_fea
+                _cost[:, refimg_fea.size()[1]:, i, :, :] = targetimg_fea
+
+        depths = np.zeros((calib.size()[0], self.maxdisp/4))
+        for i in range(calib.size()[0]):
+            depths[i] = np.linspace(disp2depth(calib[i].cpu().numpy(), 1),
+                                    disp2depth(calib[i].cpu().numpy(), self.maxdisp/4),
+                                    self.maxdisp/4, endpoint=False)
+        depths4 = np.zeros((calib.size()[0], self.maxdisp))
+        for i in range(calib.size()[0]):
+            depths4[i] = np.linspace(disp2depth(calib[i].cpu().numpy(), 1),
+                                    disp2depth(calib[i].cpu().numpy(), self.maxdisp),
+                                    self.maxdisp, endpoint=False)
+        _costD = convert_cost_volume(_cost, calib, depths)
+        cost = Variable(_costD, volatile=not self.training).cuda().contiguous()
 
         cost0 = self.dres0(cost)
         cost0 = self.dres1(cost0) + cost0
@@ -147,16 +160,16 @@ class PSMNet(nn.Module):
 
             cost1 = torch.squeeze(cost1, 1)
             pred1 = F.softmax(cost1, dim=1)
-            pred1 = disparityregression(self.maxdisp)(pred1)
+            pred1 = depthregression(depths4)(pred1)
 
             cost2 = torch.squeeze(cost2, 1)
             pred2 = F.softmax(cost2, dim=1)
-            pred2 = disparityregression(self.maxdisp)(pred2)
+            pred2 = depthregression(depths4)(pred2)
 
         cost3 = F.upsample(cost3, [self.maxdisp, left.size()[2], left.size()[3]], mode='trilinear')
         cost3 = torch.squeeze(cost3, 1)
         pred3 = F.softmax(cost3, dim=1)
-        pred3 = disparityregression(self.maxdisp)(pred3)
+        pred3 = depthregression(depths4)(pred3)
 
         if self.training:
             return pred1, pred2, pred3

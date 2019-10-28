@@ -74,8 +74,8 @@ class PSMNet(nn.Module):
              _cost[:, refimg_fea.size()[1]:, i, :,:]   = targetimg_fea
 
         depths = np.linspace(disp2depth(calib, 1),
-                             disp2depth(calib, maxdisp/4),
-                             maxdisp/4, endpoint=False)
+                             disp2depth(calib, self.maxdisp/4),
+                             self.maxdisp/4, endpoint=False)
         _costD = convert_cost_volume(_cost, calib, self.depths)
         cost = Variable(_costD, volatile=not self.training).cuda().contiguous()
 
@@ -89,6 +89,6 @@ class PSMNet(nn.Module):
         cost = F.upsample(cost, [self.maxdisp,left.size()[2],left.size()[3]], mode='trilinear')
         cost = torch.squeeze(cost,1)
         pred = F.softmax(cost)
-        pred = depthregression(self.depths)(calib, pred)
+        pred = depthregression(depths)(calib, pred)
 
         return pred

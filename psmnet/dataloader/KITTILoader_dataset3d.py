@@ -43,10 +43,11 @@ class myImageFloder(data.Dataset):
         left = self.left[index]
         right = self.right[index]
         disp_L = self.disp_L[index]
+        calibpath = self.calib[index]
 
         left_img = self.loader(left)
         right_img = self.loader(right)
-        calib = calib_loader(self.calib)
+        calib = calib_loader(calibpath)
         dataL = self.dploader(disp_L)
 
         if self.training:
@@ -83,7 +84,7 @@ class myImageFloder(data.Dataset):
 
         dataL = torch.from_numpy(dataL).float()
         calib = torch.tensor(calib).float()
-        return left_img, right_img, dataL
+        return left_img, right_img, dataL, calib
 
     def __len__(self):
         return len(self.left)

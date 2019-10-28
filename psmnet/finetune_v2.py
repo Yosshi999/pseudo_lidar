@@ -55,6 +55,8 @@ if not os.path.isdir(args.savemodel):
     os.makedirs(args.savemodel)
 print(os.path.join(args.savemodel, 'training.log'))
 log = logger.setup_logger(os.path.join(args.savemodel, 'training.log'))
+import datetime
+log.info(datetime.datetime.now())
 
 all_left_img, all_right_img, all_left_disp, all_calib, = ls.dataloader(args.datapath,
                                                             args.split_file, True)
@@ -112,19 +114,19 @@ def train(imgL, imgR, disp_L, calib):
         output1 = torch.squeeze(output1, 1)
         output2 = torch.squeeze(output2, 1)
         output3 = torch.squeeze(output3, 1)
-        depth_true = disp2depth(calib, disp_true[mask])
+        depth_true = disp2depth_torch(calib.view(-1, 1, 1), disp_true)[mask]
         loss = 0.5 * F.smooth_l1_loss(output1[mask], depth_true, size_average=True) + 0.7 * F.smooth_l1_loss(
             output2[mask], depth_true, size_average=True) + F.smooth_l1_loss(output3[mask], depth_true,
                                                                                   size_average=True)
     elif args.model == 'basic':
         output = model(imgL, imgR, calib)
         output = torch.squeeze(output, 1)
-        loss = F.smooth_l1_loss(output[mask], disp2depth(calib, disp_true[mask]), size_average=True)
+        loss = F.smooth_l1_loss(output[mask], disp2depth_torch(calib, disp_true[mask]), size_average=True)
 
     loss.backward()
     optimizer.step()
 
-    return loss.data[0]
+    return loss.data.item()
 
 
 def test(imgL, imgR, disp_true, calib):
@@ -142,7 +144,7 @@ def test(imgL, imgR, disp_true, calib):
     pred_disp = output3.data.cpu()
 
     # computing 3-px error#
-    depth_true = disp2depth(calib, disp_true)
+    depth_true = disp2depth_torch(calib, disp_true)
     true_depth = depth_true
     index = np.argwhere(true_depth > 0)
     depth_true[index[0][:], index[1][:], index[2][:]] = np.abs(
@@ -179,22 +181,22 @@ def main():
             start_time = time.time()
 
             loss = train(imgL_crop, imgR_crop, disp_crop_L, calib)
-            print('Iter %d training loss = %.3f , time = %.2f' % (batch_idx, loss, time.time() - start_time))
+            log.info('Iter %d training loss = %.3f , time = %.2f , progress = %.2f' % (batch_idx, loss, time.time() - start_time, (batch_idx+1.0)/len(TrainImgLoader)))
             total_train_loss += loss
-        print('epoch %d total training loss = %.3f' % (epoch, total_train_loss / len(TrainImgLoader)))
+        log.info('epoch %d total training loss = %.3f' % (epoch, total_train_loss / len(TrainImgLoader)))
 
         ## test ##
         for batch_idx, (imgL, imgR, disp_L, calib) in enumerate(TestImgLoader):
             test_loss = test(imgL,imgR, disp_L, calib)
-            print('Iter %d 3-px error in val = %.3f' %(batch_idx, test_loss*100))
+            log.info('Iter %d 3-px error in val = %.3f , progress = %.2f' %(batch_idx, test_loss*100, (batch_idx+1.0)/len(TestImgLoader)))
             total_test_loss += test_loss
 
 
-        print('epoch %d total 3-px error in val = %.3f' %(epoch, total_test_loss/len(TestImgLoader)*100))
+        log.info('epoch %d total 3-px error in val = %.3f' %(epoch, total_test_loss/len(TestImgLoader)*100))
         if total_test_loss/len(TestImgLoader)*100 > max_acc:
             max_acc = total_test_loss/len(TestImgLoader)*100
             max_epo = epoch
-        print('MAX epoch %d total test error = %.3f' %(max_epo, max_acc))
+        log.info('MAX epoch %d total test error = %.3f' %(max_epo, max_acc))
 
         # SAVE
         if not os.path.isdir(args.savemodel):
