@@ -17,6 +17,7 @@ import logger
 from dataloader import KITTILoader3D as ls
 from dataloader import KITTILoader_dataset3d as DA
 from models.old import *
+from models.V2_util import *
 
 parser = argparse.ArgumentParser(description='PSMNet')
 parser.add_argument('--maxdisp', type=int, default=192,
@@ -57,16 +58,16 @@ log = logger.setup_logger(os.path.join(args.savemodel, 'training.log'))
 import datetime
 log.info(datetime.datetime.now())
 
-all_left_img, all_right_img, all_left_disp, = ls.dataloader(args.datapath,
-                                                            args.split_file)
-all_left_img_v, all_right_img_v, all_left_disp_v, = ls.dataloader(args.datapath,
+all_left_img, all_right_img, all_left_disp, all_calib, = ls.dataloader(args.datapath,
+                                                            args.split_file, True)
+all_left_img_v, all_right_img_v, all_left_disp_v, all_calib_v, = ls.dataloader(args.datapath,
                                                             args.split_file.replace('train', 'val'), True)
 
 TrainImgLoader = torch.utils.data.DataLoader(
-    DA.myImageFloder(all_left_img, all_right_img, all_left_disp, True),
+    DA.myImageFloder(all_left_img, all_right_img, all_left_disp, all_calib, True),
     batch_size=args.btrain, shuffle=True, num_workers=14, drop_last=False)
 TestImgLoader = torch.utils.data.DataLoader(
-    DA.myImageFloder(all_left_img_v, all_right_img_v, all_left_disp_v, False),
+    DA.myImageFloder(all_left_img_v, all_right_img_v, all_left_disp_v, all_calib_v, False),
     batch_size=args.btrain, shuffle=False, num_workers=14, drop_last=False)
 
 if args.model == 'stackhourglass':
@@ -90,14 +91,16 @@ print('Number of model parameters: {}'.format(sum([p.data.nelement() for p in mo
 optimizer = optim.Adam(model.parameters(), lr=0.1, betas=(0.9, 0.999))
 
 
-def train(imgL, imgR, disp_L):
+def train(imgL, imgR, disp_L, calib):
     model.train()
     imgL = Variable(torch.FloatTensor(imgL))
     imgR = Variable(torch.FloatTensor(imgR))
     disp_L = Variable(torch.FloatTensor(disp_L))
+    calib = Variable(torch.FloatTensor(calib))
 
     if args.cuda:
         imgL, imgR, disp_true = imgL.cuda(), imgR.cuda(), disp_L.cuda()
+        calib = calib.cuda()
 
     # ---------
     mask = (disp_true > 0)
@@ -108,16 +111,18 @@ def train(imgL, imgR, disp_L):
 
     if args.model == 'stackhourglass':
         output1, output2, output3 = model(imgL, imgR)
-        output1 = torch.squeeze(output1, 1)
-        output2 = torch.squeeze(output2, 1)
-        output3 = torch.squeeze(output3, 1)
-        loss = 0.5 * F.smooth_l1_loss(output1[mask], disp_true[mask], size_average=True) + 0.7 * F.smooth_l1_loss(
-            output2[mask], disp_true[mask], size_average=True) + F.smooth_l1_loss(output3[mask], disp_true[mask],
+        output1 = torch.squeeze(disp2depth_torch(calib.view(-1,1,1), output1), 1)
+        output2 = torch.squeeze(disp2depth_torch(calib.view(-1,1,1), output2), 1)
+        output3 = torch.squeeze(disp2depth_torch(calib.view(-1,1,1), output3), 1)
+        depth_true = disp2depth_torch(calib.view(-1, 1, 1), disp_true)[mask]
+        loss = 0.5 * F.smooth_l1_loss(output1[mask], depth_true, size_average=True) + 0.7 * F.smooth_l1_loss(
+            output2[mask], depth_true, size_average=True) + F.smooth_l1_loss(output3[mask], depth_true,
                                                                                   size_average=True)
     elif args.model == 'basic':
         output = model(imgL, imgR)
-        output = torch.squeeze(output, 1)
-        loss = F.smooth_l1_loss(output[mask], disp_true[mask], size_average=True)
+        output = torch.squeeze(disp2depth_torch(calib.view(-1,1,1), output), 1)
+        depth_true = disp2depth_torch(calib.view(-1, 1, 1), disp_true)
+        loss = F.smooth_l1_loss(output[mask], disp2depth_torch(calib, depth_true[mask]), size_average=True)
 
     loss.backward()
     optimizer.step()
@@ -125,12 +130,31 @@ def train(imgL, imgR, disp_L):
     return loss.data.item()
 
 
-def test(imgL, imgR, disp_true):
+def test(imgL, imgR, disp_true, calib):
     model.eval()
     imgL = Variable(torch.FloatTensor(imgL))
     imgR = Variable(torch.FloatTensor(imgR))
+    disp_true = Variable(torch.FloatTensor(disp_true))
+    calib = Variable(torch.FloatTensor(calib))
     if args.cuda:
-        imgL, imgR = imgL.cuda(), imgR.cuda()
+        imgL, imgR, disp_true = imgL.cuda(), imgR.cuda(), disp_true.cuda()
+        calib = calib.cuda()
+
+    # with torch.no_grad():
+    #     output3 = disp2depth(calib.view(-1,1,1), model(imgL, imgR))
+
+    # pred_depth = output3.data.cpu()
+
+    # # computing 3-px error in depth#
+    # depth_true = disp2depth_torch(calib.view(-1, 1, 1), disp_true).cpu()
+    # true_depth = depth_true
+    # index = np.argwhere(true_depth > 0)
+    # depth_true[index[0][:], index[1][:], index[2][:]] = np.abs(
+    #     true_depth[index[0][:], index[1][:], index[2][:]] - pred_depth[index[0][:], index[1][:], index[2][:]])
+    # correct = (depth_true[index[0][:], index[1][:], index[2][:]] < 3) | (
+    #         depth_true[index[0][:], index[1][:], index[2][:]] < true_depth[
+    #     index[0][:], index[1][:], index[2][:]] * 0.05)
+    # torch.cuda.empty_cache()
 
     with torch.no_grad():
         output3 = model(imgL, imgR)
@@ -146,7 +170,6 @@ def test(imgL, imgR, disp_true):
             disp_true[index[0][:], index[1][:], index[2][:]] < true_disp[
         index[0][:], index[1][:], index[2][:]] * 0.05)
     torch.cuda.empty_cache()
-
     return 1 - (float(torch.sum(correct)) / float(len(index[0])))
 
 
@@ -166,20 +189,21 @@ def main():
 
     for epoch in range(args.start_epoch, args.epochs + 1):
         total_train_loss = 0
+        total_test_loss= 0
         adjust_learning_rate(optimizer, epoch)
 
         ## training ##
-        for batch_idx, (imgL_crop, imgR_crop, disp_crop_L) in enumerate(TrainImgLoader):
+        for batch_idx, (imgL_crop, imgR_crop, disp_crop_L, calib) in enumerate(TrainImgLoader):
             start_time = time.time()
 
-            loss = train(imgL_crop, imgR_crop, disp_crop_L)
-            log.info('Iter %d training loss = %.3f , time = %.2f' % (batch_idx, loss, time.time() - start_time))
+            loss = train(imgL_crop, imgR_crop, disp_crop_L, calib)
+            log.info('Iter %d training loss = %.3f , time = %.2f , progress = %.2f' % (batch_idx, loss, time.time() - start_time, (batch_idx+1.0)/len(TrainImgLoader)))
             total_train_loss += loss
         log.info('epoch %d total training loss = %.3f' % (epoch, total_train_loss / len(TrainImgLoader)))
 
         ## test ##
-        for batch_idx, (imgL, imgR, disp_L) in enumerate(TestImgLoader):
-            test_loss = test(imgL,imgR, disp_L)
+        for batch_idx, (imgL, imgR, disp_L, calib) in enumerate(TestImgLoader):
+            test_loss = test(imgL,imgR, disp_L, calib)
             log.info('Iter %d 3-px error in val = %.3f , progress = %.2f' %(batch_idx, test_loss*100, (batch_idx+1.0)/len(TestImgLoader)))
             total_test_loss += test_loss
 

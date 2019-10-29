@@ -6,5 +6,5 @@ python finetune_v2.py --maxdisp 192 \
 	--epochs 300 \
 	--lr_scale 50 \
 	--loadmodel ./pretrained_sceneflow.tar \
-	--savemodel ./kitti_3d/ \
+	--savemodel ./kitti_3d_v2/ \
 	--btrain 2
