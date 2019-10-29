@@ -14,8 +14,8 @@ import torch.utils.data
 from torch.autograd import Variable
 
 import logger
-from dataloader import KITTILoader3D as ls
-from dataloader import KITTILoader_dataset3d as DA
+from dataloader.old import KITTILoader3D as ls
+from dataloader.old import KITTILoader_dataset3d as DA
 from models.old import *
 
 parser = argparse.ArgumentParser(description='PSMNet')
@@ -60,7 +60,7 @@ log.info(datetime.datetime.now())
 all_left_img, all_right_img, all_left_disp, = ls.dataloader(args.datapath,
                                                             args.split_file)
 all_left_img_v, all_right_img_v, all_left_disp_v, = ls.dataloader(args.datapath,
-                                                            args.split_file.replace('train', 'val'), True)
+                                                            args.split_file.replace('train', 'val'))
 
 TrainImgLoader = torch.utils.data.DataLoader(
     DA.myImageFloder(all_left_img, all_right_img, all_left_disp, True),
