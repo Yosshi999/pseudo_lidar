@@ -7,47 +7,60 @@ from scipy.spatial import KDTree
 import cvxopt
 from cvxopt import matrix
 from kitti_util import *
-from generate_lidar import project_depth_to_points
+import generate_lidar
 
-def build_knn_graph(calib, k, lidar, depth, max_high=1, method='nearest'):
-    """build KNN Graph and return its weight.
+def _make_anchor(calib, pseudo, lidar, method):
+    if method == 'nearest':
+        proj_lidar = calib.project_velo_to_image(lidar)  # (N, 2)
+        proj_pseudo = calib.project_velo_to_image(pseudo)  # (M, 2)
+        tree = KDTree(proj_pseudo)
+        _, nn_indices = tree.query(proj_lidar, 1)
+        anchor_depth = pseudo[nn_indices[:,0]]
+
+        proj_anchor = np.hstack([
+            proj_lidar,
+            anchor_depth[:,None]])
+        anchor = calib.project_image_to_velo(proj_anchor) # (N, 3)
+        return anchor
+    else:
+        raise NotImplementedError()
+    
+def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
+    """build KNN Graph and return shifted pseudo lidar.
     Parameters:
         calib: Calilbration
+        pseudo: (M, 3) array_like, XYZ
+            the pseudo lidar data points
+        max_high: float
+            the parameter for generating lidar
         k: int
             the number of nearest neighbor
         lidar: (N, 3) array_like, XYZ
             the "ground truth" lidar data points
-        depth: (H, W) array_like
-            the pseudo lidar depth map
-        max_high: float
-            the parameter for generating lidar
         method: 'nearest' or 'bilinear'
             the method to project 3d lidar points onto pixel locations
     Returns:
-        weight: (
+        cloud: (N+M, 3) array_like
     """
-    rows, cols = depth.shape
-    proj_lidar = calib.project_velo_to_image(lidar)
-    proj_lidar_r = proj_lidar[:,0]
-    proj_lidar_c = proj_lidar[:,1]
-    if method == 'nearest':
-        r = np.floor(proj_lidar_r + 0.5)
-        c = np.floor(proj_lidar_c + 0.5)
-        anchor_depth = depth[r, c]
-    elif method == 'bilinear':
-        raise NotImplementedError()
-    else:
-        raise NotImplementedError()
+    #rows, cols = depth.shape
+    #proj_lidar = calib.project_velo_to_image(lidar)
+    #proj_lidar_r = proj_lidar[:,0]
+    #proj_lidar_c = proj_lidar[:,1]
+    #if method == 'nearest':
+    #    r = np.floor(proj_lidar_r + 0.5)
+    #    c = np.floor(proj_lidar_c + 0.5)
+    #    anchor_depth = depth[r, c]
+    #elif method == 'bilinear':
+    #    raise NotImplementedError()
+    #else:
+    #    raise NotImplementedError()
+    ## TODO: need to ignore lidar points outside image / behind the car (X <= 0 ?)
+    
 
-
-    proj_anchor = np.hstack([
-        proj_lidar_c[:,None],
-        proj_lidar_r[:,None],
-        anchor_depth[:,None]])
-    anchor = calib.project_image_to_velo(proj_anchor) # (N, 3)
+    anchor = _make_anchor(calib, pseudo, lidar, method)
     N = len(anchor)
     
-    pseudo = project_depth_to_points(calib, depth, max_high) # (M, 3)
+    pseudo = generate_lidar.project_depth_to_points(calib, depth, max_high) # (M, 3)
     M = len(pseudo)
 
     data = np.concatenate([anchor, pseudo]) # (N+M, 3)
@@ -101,5 +114,43 @@ def build_knn_graph(calib, k, lidar, depth, max_high=1, method='nearest'):
     for i in range(3):
         Zretrieve[i] = sparse.linalg.lsqr(Wz,
                                           GZ.getcol(i) - Wg*G.getcol(i))
-    return Zretrieve.T
+
+    cloud = np.concatenate([lidar, Zretrieve.T])
+    return cloud
+
+if __name__ == '__main__':
+    import argparse
+    import os
+    from tqdm import tqdm
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--calib_dir', type=str)
+    parser.add_argument('--pseudo_dir', type=str)
+    parser.add_argument('--lidar_dir', type=str)
+    parser.add_argument('--save_dir', type=str, default='./shifted_valodyne')
+    parser.add_argument('--max_high', type=int, default=1)
+    parser.add_argument('--nn', type=int, default=10)
+    args = parser.parse_args()
+    
+    assert os.path.isdir(args.calib_dir)
+    assert os.path.isdir(args.pseudo_dir)
+    assert os.path.isdir(args.lidar_dir)
+    if not os.path.isdir(args.save_dir):
+        os.makedirs(args.save_dir)
+
+    pseudo_fns = [x for x in os.listdir(args.pseudo_dir) if x[-3:] == 'bin']
+    pseudo_fns = sorted(pseudo_fns)
+
+    for fn in tqdm(pseudo_fns):
+        predix = fn[:-4]
+        calib_file = '{}/{}.txt'.format(args.calib_dir, predix)
+        calib = kitti_util.Calibration(calib_file)
+        lidar_file = '{}/{}.bin'.format(args.lidar_dir, predix)
+        lidar = np.fromfile(lidar_file, dtype=np.float32).reshape(-1, 4)
+        pseudo_file = '{}/{}.bin'.format(args.lidar_dir, predix)
+        pseudo = np.fromfile(pseudo_file, dtype=np.float32).reshape(-1, 4)
+        
+        shifted = gdc(calib, pseudo[:,:3], args.max_high, args.nn, lidar[:,:3])
+        shifted.astype(np.float32).tofile('{}/{}.bin'.format(args.save_dir, predix))
+
+
 
