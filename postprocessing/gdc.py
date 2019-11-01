@@ -1,9 +1,11 @@
 import os
+import time
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "../preprocessing"))
 import numpy as np
 from scipy import sparse
-from scipy.spatial import KDTree
+import scipy.sparse.linalg
+import open3d as o3d
 import cvxopt
 from cvxopt import matrix
 from kitti_util import *
@@ -11,16 +13,31 @@ import generate_lidar
 
 def _make_anchor(calib, pseudo, lidar, method):
     if method == 'nearest':
+        print("M=", len(pseudo))
+        print("N=", len(lidar))
         proj_lidar = calib.project_velo_to_image(lidar)  # (N, 2)
         proj_pseudo = calib.project_velo_to_image(pseudo)  # (M, 2)
-        tree = KDTree(proj_pseudo)
-        _, nn_indices = tree.query(proj_lidar, 1)
-        anchor_depth = pseudo[nn_indices[:,0]]
 
-        proj_anchor = np.hstack([
-            proj_lidar,
-            anchor_depth[:,None]])
-        anchor = calib.project_image_to_velo(proj_anchor) # (N, 3)
+        proj_lidar_ = np.hstack([proj_lidar, np.zeros((len(lidar), 1))])
+        proj_pseudo_ = np.hstack([proj_pseudo, np.zeros((len(pseudo), 1))])
+
+        print("anchor start");_t = time.time()
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(proj_pseudo_)
+        tree = o3d.geometry.KDTreeFlann(pcd)
+        nn_indices = np.empty(len(proj_lidar), dtype=np.int)
+        for i, q in enumerate(proj_lidar_):
+            _, nn_idx, _ = tree.search_knn_vector_3d(q, 1)
+            nn_indices[i] = nn_idx[0]
+        #_, nn_indices = tree.query(proj_lidar, 1)
+        print("anchor done", time.time() - _t)
+
+        # anchor_depth = pseudo[nn_indices, 2]
+        # proj_anchor = np.hstack([
+        #     proj_lidar,
+        #     anchor_depth[:,None]])
+        # anchor = calib.project_image_to_velo(proj_anchor) # (N, 3)
+        anchor = pseudo[nn_indices]
         return anchor
     else:
         raise NotImplementedError()
@@ -55,67 +72,120 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
     #else:
     #    raise NotImplementedError()
     ## TODO: need to ignore lidar points outside image / behind the car (X <= 0 ?)
-    
 
     anchor = _make_anchor(calib, pseudo, lidar, method)
     N = len(anchor)
     
-    pseudo = generate_lidar.project_depth_to_points(calib, depth, max_high) # (M, 3)
+    #pseudo = generate_lidar.project_depth_to_points(calib, depth, max_high) # (M, 3)
     M = len(pseudo)
 
     data = np.concatenate([anchor, pseudo]) # (N+M, 3)
     NM = len(data)
 
     ## calc the weight of knn-graph (N+M, N+M)
-    tree = KDTree(data)
-    _, nn_indices = tree.query(data, k+1)
-    nn_indices = nn_indices[:, 1:] # exclude myself, (N+M, k)
+    print("knn start");_t=time.time()
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(data)
+    tree = o3d.geometry.KDTreeFlann(pcd)
+    nn_indices = np.empty((NM, k), dtype=np.int)
+    for i, q in enumerate(data):
+        _, nn_idx, _ = tree.search_knn_vector_3d(q, k+1)
+        nn_indices[i] = nn_idx[1:] # exclude myself
 
-    Wg_data = np.empty((N, k))
+    # tree = KDTree(data)
+    # _, nn_indices = tree.query(data, k+1)
+    # nn_indices = nn_indices[:, 1:] # exclude myself, (N+M, k)
+    print("knn done", time.time() - _t)
+
+    Wg_data = []
     Wg_ind = []
-    Wg_indp = np.empty(N+1, dtype=np.int)
+    Wg_indp = np.empty(NM+1, dtype=np.int)
     Wg_indp[0] = 0
 
-    Wz_data = np.empty((M, k))
+    Wz_data = []
     Wz_ind = []
-    Wz_indp = np.empty(M+1, dtype=np.int)
+    Wz_indp = np.empty(NM+1, dtype=np.int)
     Wz_indp[0] = 0
-    for i in range(NM):
+
+    print("building knn-graph...");_t=time.time()
+    cvxopt.solvers.options['show_progress'] = False
+    # cvxopt.solvers.options['kktreg'] = 1e-9
+    for i in tqdm(range(NM)):
+        # nn = data[nn_indices[i]].T # (3, k)
+        # target = data[i] # (3,)
+        # one = np.ones((1, k))
+        # one_target = np.ones(1)
+        # 
+        # P = matrix(np.eye(k))
+        # q = matrix(np.zeros(k))
+        # G = matrix(-np.eye(k))
+        # h = matrix(np.zeros(k))
+        # A = matrix(np.concatenate([nn, one]))
+        # b = matrix(np.concatenate([target, one_target]))
+        # sol = np.asarray(
+        #         cvxopt.solvers.qp(P,q,G,h,A=A,b=b, kktsolver='ldl')["x"]
+        #       ).reshape(-1) # [FIXME] ValueError: Rank(A) < p or Rank([P; A; G]) < n
         nn = data[nn_indices[i]].T # (3, k)
+        P = nn.T @ nn
+        P = matrix(P.astype(np.double))
         target = data[i] # (3,)
-        one = np.ones((1, k))
-        one_target = np.ones(1)
-        
-        P = matrix(np.eye(k))
-        q = matrix(np.zeros(k))
-        G = matrix(np.concatenate([nn, -nn, one, -one]))
-        h = matrix(np.concatenate([target, -target, one_target, one_target]))
-        sol = cvxopt.solvers.qp(P,q,G,h)
+        q = nn.T @ target[:,None]
+        q = matrix(q.astype(np.double))
+        G = matrix(-np.eye(k))
+        h = matrix(np.zeros(k))
+        A = matrix(np.ones((1,k)))
+        b = matrix(np.ones(1))
+        sol = np.asarray(
+                cvxopt.solvers.qp(P, q, G, h, A, b)["x"]
+              ).reshape(-1)
+
         inG = nn_indices[i] < N
         inZ = nn_indices[i] >= N
-        Wg_data[i] = sol.x[inG]
-        Wg_ind.append(nn_indices[inG])
+        Wg_data.append(sol[inG])
+        Wg_ind.append(nn_indices[i][inG])
         Wg_indp[i+1] = Wg_indp[i] + inG.sum()
 
-        Wz_data[i] = sol.x[inZ]
-        Wz_ind.append(nn_indices[inZ])
+        Wz_data.append(sol[inZ])
+        Wz_ind.append(nn_indices[i][inZ] - N)
         Wz_indp[i+1] = Wz_indp[i] + inZ.sum()
+    # nn = data[nn_indices] # (NM, k, 3)
+    # P_data = np.matmul(nn, nn.transpose(0, 2, 1)) # (NM, k, k)
+    # P_col, P_row = np.meshgrid(np.arange(k), np.arange(k))
+    # P_col = 
+    # target = data # (NM, 3)
+    # _q = np.matmul(nn, target[:,:,None]).astype(np.double).reshape(NM, k)
+    # _A = np.ones((NM, k))
+    # _b = np.ones(NM)
+    # P = spmatrix(_P.reshape(-1), 
+
+
+    Wz_ind = np.concatenate(Wz_ind)
+    Wg_ind = np.concatenate(Wg_ind)
+    Wg_data = np.concatenate(Wg_data)
+    Wz_data = np.concatenate(Wz_data)
 
     Wg = sparse.csr_matrix((Wg_data, Wg_ind, Wg_indp), shape=(NM,N))
+    Wg.setdiag(-1, k=0)
     Wz = sparse.csr_matrix((Wz_data, Wz_ind, Wz_indp), shape=(NM,M))
+    Wz.setdiag(-1, k=-N)
+    print(time.time() - _t)
     
     ## retrieve ##
-    G = sparse.csc_matrix((lidar.T.reshape(-1),
-                           np.tile(np.arange(N), 3),
-                           np.arange(4) * N), shape=(N, 3))
-    GZ = sparse.csc_matrix(np.concatenate([lidar, pseudo])) # (N+M, 3)
+    print("retrieve...");_t=time.time()
 
     Zretrieve = np.empty((3, M))
     for i in range(3):
-        Zretrieve[i] = sparse.linalg.lsqr(Wz,
-                                          GZ.getcol(i) - Wg*G.getcol(i))
+        b = Wg.multiply(lidar[:,i]).sum(axis=1)
+        b = np.asarray(b).reshape(-1)
+        print(b)
+        print(type(b))
+        print(b.shape)
+        print(Wz.shape)
+        Zretrieve[i] = sparse.linalg.lsqr(Wz, -b)[0]
 
+    print("make cloud")
     cloud = np.concatenate([lidar, Zretrieve.T])
+    print(time.time() - _t)
     return cloud
 
 if __name__ == '__main__':
@@ -143,10 +213,10 @@ if __name__ == '__main__':
     for fn in tqdm(pseudo_fns):
         predix = fn[:-4]
         calib_file = '{}/{}.txt'.format(args.calib_dir, predix)
-        calib = kitti_util.Calibration(calib_file)
+        calib = Calibration(calib_file)
         lidar_file = '{}/{}.bin'.format(args.lidar_dir, predix)
         lidar = np.fromfile(lidar_file, dtype=np.float32).reshape(-1, 4)
-        pseudo_file = '{}/{}.bin'.format(args.lidar_dir, predix)
+        pseudo_file = '{}/{}.bin'.format(args.pseudo_dir, predix)
         pseudo = np.fromfile(pseudo_file, dtype=np.float32).reshape(-1, 4)
         
         shifted = gdc(calib, pseudo[:,:3], args.max_high, args.nn, lidar[:,:3])

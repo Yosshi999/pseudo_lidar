@@ -20,8 +20,11 @@ w = gl.GLViewWidget()
 w.opts['distance'] = 20
 layout.addWidget(w)
 
-# g = gl.GLGridItem()
-# w.addItem(g)
+g = gl.GLGridItem()
+w.addItem(g)
+
+a = gl.GLAxisItem()
+w.addItem(a)
 
 def onStateChange(sp, check, i):
     sp.setVisible(check.isChecked())
