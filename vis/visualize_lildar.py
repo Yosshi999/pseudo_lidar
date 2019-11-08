@@ -6,6 +6,7 @@ from functools import partial
 
 parser = ArgumentParser()
 parser.add_argument('filename', type=str, nargs='+')
+parser.add_argument('--no_intensity', action='store_true')
 args = parser.parse_args()
 
 app = QtGui.QApplication([])
@@ -31,7 +32,10 @@ def onStateChange(sp, check, i):
 
 cs = [(1,0,0,1), (0,1,0,1), (0,0,1,1)]
 for i, fn in enumerate(args.filename):
-    data = np.fromfile(fn, dtype=np.float32).reshape(-1, 4)
+    if args.no_intensity:
+        data = np.fromfile(fn, dtype=np.float32).reshape(-1, 3)
+    else:
+        data = np.fromfile(fn, dtype=np.float32).reshape(-1, 4)
     sp = gl.GLScatterPlotItem(pos=data[:,:3], size=0.1, color=cs[i%len(cs)])
     w.addItem(sp)
     check = QtGui.QCheckBox(fn)

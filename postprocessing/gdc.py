@@ -7,7 +7,7 @@ from scipy import sparse
 import scipy.sparse.linalg
 import open3d as o3d
 import cvxopt
-from cvxopt import matrix
+from cvxopt import matrix, spdiag, spmatrix
 from kitti_util import *
 import generate_lidar
 
@@ -41,6 +41,15 @@ def _make_anchor(calib, pseudo, lidar, method):
         return anchor
     else:
         raise NotImplementedError()
+
+def drop_outside_image(calib, lidar):
+    # only front
+    mask = lidar[:,0] > 0
+
+    img = calib.project_velo_to_image(lidar[:,:3])
+    mask &= (img[:,0] > 0) & (img[:,0] < 1242) & (img[:,1] > 0) & (img[:,1] < 375)
+    fewer = lidar[mask]
+    return fewer
     
 def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
     """build KNN Graph and return shifted pseudo lidar.
@@ -77,6 +86,7 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
     N = len(anchor)
     
     #pseudo = generate_lidar.project_depth_to_points(calib, depth, max_high) # (M, 3)
+    #pseudo = drop_outside_image(calib, pseudo)
     M = len(pseudo)
 
     data = np.concatenate([anchor, pseudo]) # (N+M, 3)
@@ -109,6 +119,10 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
 
     print("building knn-graph...");_t=time.time()
     cvxopt.solvers.options['show_progress'] = False
+    cvxopt.solvers.options['abstol'] = 1e-4
+    cvxopt.solvers.options['reltol'] = 1e-4
+    cvxopt.solvers.options['feastol'] = 1e-4
+
     # cvxopt.solvers.options['kktreg'] = 1e-9
     for i in tqdm(range(NM)):
         # nn = data[nn_indices[i]].T # (3, k)
@@ -150,13 +164,12 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
         Wz_indp[i+1] = Wz_indp[i] + inZ.sum()
     # nn = data[nn_indices] # (NM, k, 3)
     # P_data = np.matmul(nn, nn.transpose(0, 2, 1)) # (NM, k, k)
-    # P_col, P_row = np.meshgrid(np.arange(k), np.arange(k))
-    # P_col = 
+    # # https://cvxopt.org/examples/tutorial/creating-matrices.html
+    # P = spdiag(P_data)
     # target = data # (NM, 3)
     # _q = np.matmul(nn, target[:,:,None]).astype(np.double).reshape(NM, k)
     # _A = np.ones((NM, k))
     # _b = np.ones(NM)
-    # P = spmatrix(_P.reshape(-1), 
 
 
     Wz_ind = np.concatenate(Wz_ind)
@@ -181,7 +194,7 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
         print(type(b))
         print(b.shape)
         print(Wz.shape)
-        Zretrieve[i] = sparse.linalg.lsqr(Wz, -b)[0]
+        Zretrieve[i] = sparse.linalg.lsqr(Wz, -b, atol=1e-5, btol=1e-5)[0]
 
     print("make cloud")
     cloud = np.concatenate([lidar, Zretrieve.T])
@@ -220,6 +233,9 @@ if __name__ == '__main__':
         pseudo = np.fromfile(pseudo_file, dtype=np.float32).reshape(-1, 4)
         
         shifted = gdc(calib, pseudo[:,:3], args.max_high, args.nn, lidar[:,:3])
+        print(shifted.shape)
+        shifted = np.concatenate([shifted, np.ones((len(shifted), 1))], axis=1)
+        print(shifted.shape)
         shifted.astype(np.float32).tofile('{}/{}.bin'.format(args.save_dir, predix))
 
 
