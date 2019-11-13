@@ -156,12 +156,9 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
     Zretrieve = np.empty((3, M))
     for i in range(3):
         b = Wg.multiply(lidar[:,i]).sum(axis=1)
-        b = np.asarray(b).reshape(-1)
-        print(b)
-        print(type(b))
-        print(b.shape)
-        print(Wz.shape)
-        Zretrieve[i] = sparse.linalg.lsqr(Wz, -b, atol=1e-5, btol=1e-5)[0]
+        b = -np.asarray(b).reshape(-1)
+        A = sparse.linalg.LinearOperator((NM, NM), matvec=lambda x: Wz.multiply(x[N:]).sum(axis=1))
+        Zretrieve[i] = sparse.linalg.gmres(A, b)[0]
 
     print("make cloud")
     cloud = np.concatenate([lidar, Zretrieve.T])
