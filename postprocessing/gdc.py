@@ -6,8 +6,6 @@ import numpy as np
 from scipy import sparse
 import scipy.sparse.linalg
 import open3d as o3d
-import cvxopt
-from cvxopt import matrix, spdiag, spmatrix
 from kitti_util import *
 import generate_lidar
 
@@ -118,41 +116,17 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
     Wz_indp[0] = 0
 
     print("building knn-graph...");_t=time.time()
-    cvxopt.solvers.options['show_progress'] = False
-    cvxopt.solvers.options['abstol'] = 1e-4
-    cvxopt.solvers.options['reltol'] = 1e-4
-    cvxopt.solvers.options['feastol'] = 1e-4
 
-    # cvxopt.solvers.options['kktreg'] = 1e-9
+    sol = np.empty(k)
     for i in tqdm(range(NM)):
-        # nn = data[nn_indices[i]].T # (3, k)
-        # target = data[i] # (3,)
-        # one = np.ones((1, k))
-        # one_target = np.ones(1)
-        # 
-        # P = matrix(np.eye(k))
-        # q = matrix(np.zeros(k))
-        # G = matrix(-np.eye(k))
-        # h = matrix(np.zeros(k))
-        # A = matrix(np.concatenate([nn, one]))
-        # b = matrix(np.concatenate([target, one_target]))
-        # sol = np.asarray(
-        #         cvxopt.solvers.qp(P,q,G,h,A=A,b=b, kktsolver='ldl')["x"]
-        #       ).reshape(-1) # [FIXME] ValueError: Rank(A) < p or Rank([P; A; G]) < n
         nn = data[nn_indices[i]].T # (3, k)
-        P = nn.T @ nn
-        P = matrix(P.astype(np.double))
         target = data[i] # (3,)
-        q = nn.T @ target[:,None]
-        q = matrix(q.astype(np.double))
-        G = matrix(-np.eye(k))
-        h = matrix(np.zeros(k))
-        A = matrix(np.ones((1,k)))
-        b = matrix(np.ones(1))
-        sol = np.asarray(
-                cvxopt.solvers.qp(P, q, G, h, A, b)["x"]
-              ).reshape(-1)
-
+        A = nn[:,1:] - nn[:,0:1]
+        An = np.concatenate([A, np.eye(k-1), np.ones((1,k-1))], axis=0)
+        b = np.concatenate([target - nn[:,0], np.zeros(k-1), np.ones(1)])
+        sol_ = np.linalg.lstsq(An, b)[0]
+        sol[0] = 1 - sol_.sum()
+        sol[1:] = sol_
         inG = nn_indices[i] < N
         inZ = nn_indices[i] >= N
         Wg_data.append(sol[inG])
@@ -162,15 +136,6 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
         Wz_data.append(sol[inZ])
         Wz_ind.append(nn_indices[i][inZ] - N)
         Wz_indp[i+1] = Wz_indp[i] + inZ.sum()
-    # nn = data[nn_indices] # (NM, k, 3)
-    # P_data = np.matmul(nn, nn.transpose(0, 2, 1)) # (NM, k, k)
-    # # https://cvxopt.org/examples/tutorial/creating-matrices.html
-    # P = spdiag(P_data)
-    # target = data # (NM, 3)
-    # _q = np.matmul(nn, target[:,:,None]).astype(np.double).reshape(NM, k)
-    # _A = np.ones((NM, k))
-    # _b = np.ones(NM)
-
 
     Wz_ind = np.concatenate(Wz_ind)
     Wg_ind = np.concatenate(Wg_ind)
@@ -178,8 +143,10 @@ def gdc(calib, pseudo, max_high, k, lidar, method='nearest'):
     Wz_data = np.concatenate(Wz_data)
 
     Wg = sparse.csr_matrix((Wg_data, Wg_ind, Wg_indp), shape=(NM,N))
-    Wg.setdiag(-1, k=0)
     Wz = sparse.csr_matrix((Wz_data, Wz_ind, Wz_indp), shape=(NM,M))
+    ## save retrieved Z
+    #np.concatenate([(Wg * lidar + Wz * pseudo), np.ones((NM,1))], axis=1).astype(np.float32).tofile("reference.bin") 
+    Wg.setdiag(-1, k=0)
     Wz.setdiag(-1, k=-N)
     print(time.time() - _t)
     
